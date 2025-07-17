@@ -104,14 +104,64 @@ async def addpoint(interaction: discord.Interaction, user: discord.User, amount:
 async def item(interaction: discord.Interaction):
     user_id = str(interaction.user.id)
     items = load_json(ITEM_FILE)
-
     owned = items.get(user_id, [])
+
     if not owned:
         await interaction.response.send_message("🎒 所持アイテムがありません。まずはガチャを引こう！", ephemeral=True)
         return
 
-    item_list = "\n".join(f"- {name}" for name in owned[-10:])  # 最新10件
-    await interaction.response.send_message(f"🎁 あなたの所持アイテム一覧（最新10件）:\n{item_list}", ephemeral=True)
+    latest_items = owned[-10:]  # 最新10件
+
+    class ItemView(discord.ui.View):
+        def __init__(self):
+            super().__init__(timeout=None)  # タイムアウトなし
+
+            for item_name in latest_items:
+                self.add_item(self.create_button(item_name))
+
+        def create_button(self, item_name):
+            # ボタン生成（表示名: 画像名、カスタムID: ファイル名）
+            return discord.ui.Button(
+                label=item_name,
+                style=discord.ButtonStyle.primary,
+                custom_id=item_name
+            )
+
+        @discord.ui.button(label="PLACEHOLDER", style=discord.ButtonStyle.primary, custom_id="PLACEHOLDER")
+        async def dummy(self, interaction, button):
+            pass  # ダミー（自動生成分）
+
+        async def interaction_check(self, interaction: discord.Interaction) -> bool:
+            return interaction.user.id == interaction.user.id  # 自分のみ反応許可
+
+        async def on_error(self, interaction, error, item):
+            await interaction.response.send_message("⚠️ エラーが発生しました", ephemeral=True)
+
+        async def on_timeout(self):
+            self.stop()
+
+        async def interaction_check(self, interaction: discord.Interaction) -> bool:
+            return True
+
+        async def on_button_click(self, interaction: discord.Interaction):
+            image_name = interaction.data["custom_id"]
+            image_path = os.path.join(IMAGE_FOLDER, image_name)
+            if os.path.exists(image_path):
+                await interaction.response.send_message(
+                    f"📷 `{image_name}` を表示します", 
+                    file=discord.File(image_path),
+                    ephemeral=True
+                )
+            else:
+                await interaction.response.send_message("❌ 画像ファイルが見つかりません", ephemeral=True)
+
+    view = ItemView()
+    await interaction.response.send_message(
+        content="🎁 あなたの所持アイテム一覧（最新10件）：\n下のボタンから画像を表示できます",
+        view=view,
+        ephemeral=True
+    )
+
 
 # 起動
 bot.run(TOKEN)
