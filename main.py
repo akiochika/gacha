@@ -8,7 +8,7 @@ from discord import app_commands
 TOKEN = os.getenv("DISCORD_TOKEN")
 
 # あなたのサーバーID
-GUILD_ID = discord.Object(id=1395336553278083143)
+GUILD_ID = discord.Object(id=1328299328225148969)
 
 # 画像フォルダのパス（ローカル）
 IMAGE_FOLDER = "./images"
