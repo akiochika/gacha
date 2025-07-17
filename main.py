@@ -5,7 +5,7 @@ from discord import app_commands
 from discord.ext import commands
 
 TOKEN = os.getenv("DISCORD_TOKEN")
-GUILD_ID = discord.Object(id=123456789012345678)  # あなたのサーバーIDに置き換えてください
+GUILD_ID = discord.Object(id=1395336553278083143)  # あなたのサーバーIDに置き換えてください
 
 intents = discord.Intents.default()
 bot = commands.Bot(command_prefix="!", intents=intents)
