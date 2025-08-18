@@ -1,149 +1,147 @@
-import os
-import random
-import json
-import time
+# requirements: discord.py==2.3.*
+import re
 import discord
 from discord.ext import commands
-from discord import app_commands
 
-TOKEN = os.getenv("DISCORD_TOKEN")
-GUILD_ID = discord.Object(id=1328299328225148969)  # ← あなたのサーバーID
-IMAGE_FOLDER = "./images"
-POINT_FILE = "./data/points.json"
-ITEM_FILE = "./data/items.json"
+TOKEN = "YOUR_BOT_TOKEN"  # Railwayの環境変数で渡すのが安全
 
-intents = discord.Intents.default()
-bot = commands.Bot(command_prefix="!", intents=intents)
+INTENTS = discord.Intents.default()
+INTENTS.members = True  # ニックネーム編集・取得に必要
 
-# データ読み書き
-def load_json(path):
-    if not os.path.exists(path):
-        return {}
-    with open(path, "r", encoding="utf-8") as f:
-        return json.load(f)
+bot = commands.Bot(command_prefix="!", intents=INTENTS)
 
-def save_json(path, data):
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2)
+# 「末尾の [123pt]」を見つける正規表現
+PT_SUFFIX_RE = re.compile(r"\s*\[(\d+)pt\]\s*$")
 
-# 起動時コマンド同期
+INITIAL_POINTS = 500
+NICK_MAX = 32  # Discordのニックネーム最大文字数
+
+
+def extract_points_and_basename(name_or_nick: str) -> tuple[int | None, str]:
+    """
+    'Akito [500pt]' -> (500, 'Akito')
+    'Akito'         -> (None, 'Akito')
+    """
+    m = PT_SUFFIX_RE.search(name_or_nick)
+    if not m:
+        return None, name_or_nick
+    pts = int(m.group(1))
+    base = PT_SUFFIX_RE.sub("", name_or_nick)  # サフィックスを除去
+    return pts, base
+
+
+def build_nickname(base: str, points: int) -> str:
+    """
+    ベース名 + ' [xxxpt]' を32文字に収まるように組み立て。
+    長い場合はベース名をトリム。
+    """
+    suffix = f" [{points}pt]"
+    room = NICK_MAX - len(suffix)
+    if room < 1:
+        # ありえないほど大きいポイント桁数対策（安全側で末尾だけ）
+        return suffix.strip()[:NICK_MAX]
+    trimmed_base = base[:room]
+    return trimmed_base + suffix
+
+
+async def get_points(member: discord.Member) -> int:
+    """
+    メンバーのニックネーム(or名前)からポイントを取得。
+    無ければ INITIAL_POINTS を返す（その場では書き換えない）。
+    """
+    name = member.nick or member.name
+    pts, _ = extract_points_and_basename(name)
+    return pts if pts is not None else INITIAL_POINTS
+
+
+async def set_points(member: discord.Member, points: int) -> None:
+    """
+    メンバーのニックネーム末尾に [xxxpt] を付けて保存（＝永続化）。
+    既存の [xxxpt] は置き換える。権限エラーは握りつぶさず知らせる。
+    """
+    current = member.nick or member.name
+    _, base = extract_points_and_basename(current)
+    new_nick = build_nickname(base, max(0, points))  # 負数は0で下限カット
+
+    await member.edit(nick=new_nick)
+
+
 @bot.event
 async def on_ready():
-    await bot.tree.sync(guild=GUILD_ID)
-    print(f"✅ Bot is ready: {bot.user}")
-
-# /login（12時間に1回、500ポイント）
-@bot.tree.command(name="login", description="12時間に1回500ポイント獲得", guild=GUILD_ID)
-async def login(interaction: discord.Interaction):
-    user_id = str(interaction.user.id)
-    points = load_json(POINT_FILE)
-    now = time.time()
-    last_time = points.get(user_id, {}).get("last_login", 0)
-
-    if now - last_time < 43200:  # 12時間
-        remaining = int((43200 - (now - last_time)) // 60)
-        await interaction.response.send_message(f"🕒 まだログインできません。あと {remaining} 分後に再試行できます。", ephemeral=True)
-        return
-
-    points.setdefault(user_id, {"point": 0})
-    points[user_id]["point"] += 500
-    points[user_id]["last_login"] = now
-    save_json(POINT_FILE, points)
-
-    await interaction.response.send_message("✅ 500ポイントを獲得しました！", ephemeral=True)
-
-# /gacha（1000ポイント消費）
-@bot.tree.command(name="gacha", description="1000ポイントでガチャを引く", guild=GUILD_ID)
-async def gacha(interaction: discord.Interaction):
-    user_id = str(interaction.user.id)
-    points = load_json(POINT_FILE)
-    items = load_json(ITEM_FILE)
-
-    points.setdefault(user_id, {"point": 0})
-    if points[user_id]["point"] < 1000:
-        await interaction.response.send_message("❌ ポイントが足りません（1000必要）", ephemeral=True)
-        return
-
-    image_files = [f for f in os.listdir(IMAGE_FOLDER) if f.lower().endswith((".png", ".jpg", ".jpeg", ".gif", ".webp"))]
-    if not image_files:
-        await interaction.response.send_message("❌ 画像ファイルが見つかりません", ephemeral=True)
-        return
-
-    chosen = random.choice(image_files)
-    image_path = os.path.join(IMAGE_FOLDER, chosen)
-
-    # ポイント減算
-    points[user_id]["point"] -= 1000
-    save_json(POINT_FILE, points)
-
-    # アイテム履歴に記録
-    items.setdefault(user_id, [])
-    items[user_id].append(chosen)
-    save_json(ITEM_FILE, items)
-
-    await interaction.response.send_message(f"🎉 ガチャ結果: `{chosen}`", file=discord.File(image_path))
-
-# /addpoint（管理者のみ）
-@bot.tree.command(name="addpoint", description="ポイントを付与します（管理者専用）", guild=GUILD_ID)
-@app_commands.describe(user="対象ユーザー", amount="付与ポイント")
-async def addpoint(interaction: discord.Interaction, user: discord.User, amount: int):
-    if not interaction.user.guild_permissions.manage_guild:
-        await interaction.response.send_message("🚫 あなたにはこのコマンドを使う権限がありません", ephemeral=True)
-        return
-
-    points = load_json(POINT_FILE)
-    uid = str(user.id)
-    points.setdefault(uid, {"point": 0})
-    points[uid]["point"] += amount
-    save_json(POINT_FILE, points)
-
-    await interaction.response.send_message(f"✅ {user.name} に {amount} ポイントを付与しました！")
-
-# /item（引いた画像一覧表示）
-@bot.tree.command(name="item", description="これまで引いたアイテムを確認", guild=GUILD_ID)
-async def item(interaction: discord.Interaction):
-    user_id = str(interaction.user.id)
-    items = load_json(ITEM_FILE)
-    owned = items.get(user_id, [])
-
-    if not owned:
-        await interaction.response.send_message("🎒 所持アイテムがありません。まずはガチャを引こう！", ephemeral=True)
-        return
-
-    latest_items = owned[-10:]  # 最新10件
-
-    class ItemButton(discord.ui.Button):
-        def __init__(self, file_name: str):
-            super().__init__(
-                label=file_name,
-                style=discord.ButtonStyle.primary,
-                custom_id=f"{file_name}-{random.randint(1000, 9999)}"
-            )
-            self.file_name = file_name
-
-        async def callback(self, interaction: discord.Interaction):
-            image_path = os.path.join(IMAGE_FOLDER, self.file_name)
-            if os.path.exists(image_path):
-                await interaction.response.send_message(
-                    content=f"🖼️ `{self.file_name}` を表示します",
-                    file=discord.File(image_path),
-                    ephemeral=True
-                )
-            else:
-                await interaction.response.send_message("❌ ファイルが見つかりませんでした", ephemeral=True)
-
-    class ItemView(discord.ui.View):
-        def __init__(self):
-            super().__init__(timeout=None)
-            for item in latest_items:
-                self.add_item(ItemButton(item))
-
-    await interaction.response.send_message(
-        content="🎁 あなたの所持アイテム一覧（最新10件）：\n下のボタンから画像を表示できます",
-        view=ItemView(),
-        ephemeral=True
-    )
+    print(f"✅ Logged in as {bot.user} ({bot.user.id})")
 
 
-# 起動
+@bot.command(name="mypoint")
+async def mypoint(ctx: commands.Context):
+    p = await get_points(ctx.author)
+    await ctx.reply(f"{ctx.author.mention} のポイントは **{p}pt** です！")
+
+
+@bot.command(name="add")
+@commands.has_permissions(manage_nicknames=True)
+async def add_points(ctx: commands.Context, member: discord.Member, amount: int):
+    """
+    例: !add @ユーザー 100  /  !add @ユーザー -50
+    """
+    try:
+        current = await get_points(member)
+        newp = current + amount
+        await set_points(member, newp)
+        await ctx.reply(
+            f"{member.mention} に **{amount}pt** 反映しました。合計 **{max(0, newp)}pt**"
+        )
+    except discord.Forbidden:
+        await ctx.reply("⚠️ ニックネームを変更する権限がありません（Botのロール位置/権限を確認）。")
+    except discord.HTTPException as e:
+        await ctx.reply(f"⚠️ ニックネーム更新に失敗しました: {e}")
+
+
+@bot.command(name="fixnick")
+async def fix_nick(ctx: commands.Context, member: discord.Member = None):
+    """
+    指定ユーザー（未指定なら自分）のニックネームに [xxxpt] が無い/壊れている場合に修復。
+    """
+    target = member or ctx.author
+    try:
+        # 現在値を読み取る（無ければ初期500として付与）
+        p = await get_points(target)
+        await set_points(target, p)
+        if target == ctx.author:
+            await ctx.reply("🔧 あなたのニックネームをポイント表記に修復しました。")
+        else:
+            await ctx.reply(f"🔧 {target.mention} のニックネームを修復しました。")
+    except discord.Forbidden:
+        await ctx.reply("⚠️ ニックネームを変更する権限がありません。")
+    except discord.HTTPException as e:
+        await ctx.reply(f"⚠️ ニックネーム更新に失敗しました: {e}")
+
+
+@bot.command(name="init_here")
+@commands.has_permissions(manage_nicknames=True)
+async def init_here(ctx: commands.Context):
+    """
+    現在のチャンネルのギルド内メンバーをざっとスキャンして、
+    [xxxpt] が無い人には初期500ptを付与する簡易初期化。
+    """
+    guild = ctx.guild
+    if not guild:
+        return await ctx.reply("ギルド内で実行してください。")
+
+    updated = 0
+    failed = 0
+    async for member in guild.fetch_members(limit=None):
+        if member.bot:
+            continue
+        name = member.nick or member.name
+        pts, _ = extract_points_and_basename(name)
+        if pts is None:
+            try:
+                await set_points(member, INITIAL_POINTS)
+                updated += 1
+            except Exception:
+                failed += 1
+
+    await ctx.reply(f"✅ 初期化完了: 付与 {updated} 人 / 失敗 {failed} 人")
+
+
 bot.run(TOKEN)
