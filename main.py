@@ -3,7 +3,7 @@ import re
 import discord
 from discord.ext import commands
 
-TOKEN = "DISCORD_TOKEN"  # Railwayの環境変数で渡すのが安全
+TOKEN = "YOUR_BOT_TOKEN"  # Railwayの環境変数で渡すのが安全
 
 INTENTS = discord.Intents.default()
 INTENTS.members = True  # ニックネーム編集・取得に必要
